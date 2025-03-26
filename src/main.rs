@@ -1,6 +1,8 @@
 use clap::Parser;
 use windows::Win32::Graphics::Gdi::*;
 use windows::core::PCWSTR;
+use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_SETLOGICALDPIOVERRIDE, SPIF_UPDATEINIFILE, SPIF_SENDCHANGE};
+
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -16,6 +18,18 @@ struct Args {
     /// 目标显示器 (1-显示器1/2-显示器2)，默认 1-显示器1
     #[arg(short = 'd', long, default_value_t = 1)]
     display: u32,
+
+    /// 缩放比例 (100/125/150/175/200/225/250)，不传默认不修改
+    #[arg(short = 's', long)]
+    scaling: Option<u32>,
+
+    /// 目标分辨率宽度，不传默认不修改
+    #[arg(short = 'w', long)]
+    width: Option<u32>,
+
+    /// 目标分辨率高度，不传默认不修改
+    #[arg(short = 'h', long)]
+    height: Option<u32>,
 }
 
 fn main() {
@@ -26,7 +40,21 @@ fn main() {
         return;
     }
 
-    if let Err(e) = change_display_settings(args.display, args.refresh_rate, args.orientation) {
+    if let Some(scaling) = args.scaling {
+        if ![100, 125, 150, 175, 200, 225, 250].contains(&scaling) {
+            eprintln!("无效缩放. 允许的值: 100, 125, 150, 175, 200, 225, 250.");
+            return;
+        }
+    }
+
+    if let Err(e) = change_display_settings(
+        args.display,
+        args.refresh_rate,
+        args.orientation,
+        args.scaling,
+        args.width,
+        args.height,
+    ) {
         eprintln!("错误: {}", e);
     }
 }
@@ -56,8 +84,15 @@ fn get_max_refresh_rate(device_name: PCWSTR) -> Option<u32> {
     }
 }
 
-/// 修改显示器刷新率和方向
-fn change_display_settings(display_index: u32, refresh_rate: Option<u32>, orientation: u32) -> Result<(), String> {
+/// 修改显示器的刷新率、方向、缩放比例和分辨率
+fn change_display_settings(
+    display_index: u32,
+    refresh_rate: Option<u32>,
+    orientation: u32,
+    scaling: Option<u32>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<(), String> {
     let mut device = DISPLAY_DEVICEW {
         cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
         ..Default::default()
@@ -72,22 +107,56 @@ fn change_display_settings(display_index: u32, refresh_rate: Option<u32>, orient
         let device_name = PCWSTR(device.DeviceName.as_ptr());
 
         if unsafe { EnumDisplaySettingsW(device_name, ENUM_CURRENT_SETTINGS, &mut devmode) }.as_bool() {
+            // 处理缩放比例 (优先处理，因为可能需要重启explorer)
+            if let Some(scale) = scaling {
+                // 使用系统API设置DPI缩放
+                let dpi = match scale {
+                    100 => 0, 125 => 1, 150 => 2,
+                    175 => 3, 200 => 4, 225 => 5, 250 => 6,
+                    _ => return Err("没有支持的缩放值".to_string()),
+                };
+
+                unsafe {
+                    SystemParametersInfoW(
+                        SPI_SETLOGICALDPIOVERRIDE,
+                        dpi,
+                        None,
+                        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+                    ).expect("无法应用缩放");
+                }
+
+                // 同时设置DEVMODE中的DPI值
+                let log_pixels = match scale {
+                    100 => 96, 125 => 120, 150 => 144,
+                    175 => 168, 200 => 192, 225 => 216, 250 => 240,
+                    _ => return Err("没有支持的缩放值".to_string()),
+                };
+                devmode.dmFields |= DM_LOGPIXELS;
+                devmode.dmLogPixels = log_pixels as u16;
+            }
+
             let target_refresh_rate = refresh_rate.unwrap_or_else(|| {
-                get_max_refresh_rate(device_name).unwrap_or(60) // 默认 60Hz
+                get_max_refresh_rate(device_name).unwrap_or(devmode.dmDisplayFrequency)
             });
 
-            let (new_width, new_height) = match orientation {
-                0 | 180 => (devmode.dmPelsWidth.max(devmode.dmPelsHeight), devmode.dmPelsWidth.min(devmode.dmPelsHeight)),
-                90 | 270 => (devmode.dmPelsWidth.min(devmode.dmPelsHeight), devmode.dmPelsWidth.max(devmode.dmPelsHeight)),
-                _ => return Err("没有支持的旋转角度".to_string()),
+            let (new_width, new_height) = if width.is_some() && height.is_some() {
+                (width.unwrap(), height.unwrap())
+            } else {
+                match orientation {
+                    0 | 180 => (devmode.dmPelsWidth.max(devmode.dmPelsHeight), devmode.dmPelsWidth.min(devmode.dmPelsHeight)),
+                    90 | 270 => (devmode.dmPelsWidth.min(devmode.dmPelsHeight), devmode.dmPelsWidth.max(devmode.dmPelsHeight)),
+                    _ => return Err("没有支持的旋转角度".to_string()),
+                }
             };
 
-            devmode.dmFields = DM_DISPLAYFREQUENCY | DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL;
+            devmode.dmFields |= DM_DISPLAYFREQUENCY | DM_DISPLAYORIENTATION |
+                DM_PELSWIDTH | DM_PELSHEIGHT |
+                DM_BITSPERPEL;
             devmode.dmPelsWidth = new_width;
             devmode.dmPelsHeight = new_height;
             devmode.dmDisplayFrequency = target_refresh_rate;
-            devmode.dmBitsPerPel = 32; // 设置颜色深度，确保模式完整
-            unsafe { devmode.Anonymous1.Anonymous2.dmDisplayFixedOutput = DEVMODE_DISPLAY_FIXED_OUTPUT(0); } // 0 = 默认，防止 Windows 进行动态调整
+            devmode.dmBitsPerPel = 32;
+            unsafe { devmode.Anonymous1.Anonymous2.dmDisplayFixedOutput = DEVMODE_DISPLAY_FIXED_OUTPUT(0); }
 
             unsafe {
                 devmode.Anonymous1.Anonymous2.dmDisplayOrientation = match orientation {
@@ -99,7 +168,7 @@ fn change_display_settings(display_index: u32, refresh_rate: Option<u32>, orient
                 };
             }
 
-            // 先测试
+            // 测试模式
             let test_result = unsafe {
                 ChangeDisplaySettingsExW(device_name, Some(&devmode as *const _), None, CDS_TEST, None)
             };
@@ -108,24 +177,23 @@ fn change_display_settings(display_index: u32, refresh_rate: Option<u32>, orient
                 return Err("不支持所要求的显示设置".to_string());
             }
 
-            // 应用目标设置
+            // 应用设置 - 添加CDS_FULLSCREEN标志确保刷新率完全生效
             let result = unsafe {
                 ChangeDisplaySettingsExW(
                     device_name,
                     Some(&devmode as *const _),
                     None,
-                    CDS_GLOBAL | CDS_UPDATEREGISTRY | CDS_RESET,
+                    CDS_GLOBAL | CDS_UPDATEREGISTRY | CDS_RESET | CDS_FULLSCREEN,
                     None,
                 )
             };
 
             match result {
-                DISP_CHANGE_SUCCESSFUL => {
-                    Ok(())
-                },
+                DISP_CHANGE_SUCCESSFUL => Ok(()),
                 DISP_CHANGE_BADMODE => Err("无效显示方式".to_string()),
                 DISP_CHANGE_NOTUPDATED => Err("无法应用设置".to_string()),
                 DISP_CHANGE_BADFLAGS => Err("无效标志".to_string()),
+                DISP_CHANGE_FAILED => Err("显示驱动程序在指定的图形模式下失败".to_string()),
                 _ => Err("未知错误".to_string()),
             }
         } else {
