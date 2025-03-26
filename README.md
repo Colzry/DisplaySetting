@@ -15,8 +15,8 @@
 ### 2. 克隆项目并编译
 ```sh
 # 克隆仓库
-git clone https://github.com/your-repo/display-settings-tool.git
-cd display-setting
+git clone https://github.com/Colzry/DisplaySetting.git
+cd DisplaySetting
 
 # 编译项目
 cargo build --release
