@@ -12,8 +12,8 @@ struct Args {
     refresh_rate: Option<u32>,
 
     /// 显示方向 (0-横向/90-纵向/180-横向翻转/270-纵向翻转)，默认 0-横向
-    #[arg(short = 'o', long, default_value_t = 0)]
-    orientation: u32,
+    #[arg(short = 'o', long)]
+    orientation: Option<u32>,
 
     /// 目标显示器 (1-显示器1/2-显示器2)，默认 1-显示器1
     #[arg(short = 'd', long, default_value_t = 1)]
@@ -35,9 +35,11 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    if ![0, 90, 180, 270].contains(&args.orientation) {
-        eprintln!("无效方向. 允许的值：0、90、180、270.");
-        return;
+    if let Some(orientation) = args.orientation {
+        if ![0, 90, 180, 270].contains(&orientation) {
+            eprintln!("无效方向. 允许的值：0、90、180、270.");
+            return;
+        }
     }
 
     if let Some(scaling) = args.scaling {
@@ -88,7 +90,7 @@ fn get_max_refresh_rate(device_name: PCWSTR) -> Option<u32> {
 fn change_display_settings(
     display_index: u32,
     refresh_rate: Option<u32>,
-    orientation: u32,
+    orientation: Option<u32>,
     scaling: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
@@ -107,6 +109,8 @@ fn change_display_settings(
         let device_name = PCWSTR(device.DeviceName.as_ptr());
 
         if unsafe { EnumDisplaySettingsW(device_name, ENUM_CURRENT_SETTINGS, &mut devmode) }.as_bool() {
+            let mut changed = false;
+
             // 处理缩放比例 (优先处理，因为可能需要重启explorer)
             if let Some(scale) = scaling {
                 // 使用系统API设置DPI缩放
@@ -135,38 +139,54 @@ fn change_display_settings(
                 devmode.dmLogPixels = log_pixels as u16;
             }
 
-            let target_refresh_rate = refresh_rate.unwrap_or_else(|| {
-                get_max_refresh_rate(device_name).unwrap_or(devmode.dmDisplayFrequency)
-            });
+            // 处理刷新率
+            if let Some(target_refresh_rate) = refresh_rate {
+                devmode.dmFields |= DM_DISPLAYFREQUENCY;
+                devmode.dmDisplayFrequency = target_refresh_rate;
+                changed = true;
+            }
 
-            let (new_width, new_height) = if width.is_some() && height.is_some() {
-                (width.unwrap(), height.unwrap())
-            } else {
-                match orientation {
-                    0 | 180 => (devmode.dmPelsWidth.max(devmode.dmPelsHeight), devmode.dmPelsWidth.min(devmode.dmPelsHeight)),
-                    90 | 270 => (devmode.dmPelsWidth.min(devmode.dmPelsHeight), devmode.dmPelsWidth.max(devmode.dmPelsHeight)),
-                    _ => return Err("没有支持的旋转角度".to_string()),
+            // 处理方向
+            if let Some(rotate) = orientation {
+                devmode.dmFields |= DM_DISPLAYORIENTATION;
+                unsafe {
+                    devmode.Anonymous1.Anonymous2.dmDisplayOrientation = match rotate {
+                        0 => DMDO_DEFAULT,
+                        90 => DMDO_90,
+                        180 => DMDO_180,
+                        270 => DMDO_270,
+                        _ => return Err("没有支持的旋转角度".to_string()),
+                    };
+                };
+
+                // 如果用户未提供 width 和 height，自动交换当前分辨率
+                // 只有90°和270°才交换宽高
+                if width.is_none() && height.is_none() {
+                    if rotate == 90 || rotate == 270 {
+                        let temp = devmode.dmPelsWidth;
+                        devmode.dmPelsWidth = devmode.dmPelsHeight;
+                        devmode.dmPelsHeight = temp;
+                    }
                 }
-            };
+                changed = true;
+            }
 
-            devmode.dmFields |= DM_DISPLAYFREQUENCY | DM_DISPLAYORIENTATION |
-                DM_PELSWIDTH | DM_PELSHEIGHT |
-                DM_BITSPERPEL;
-            devmode.dmPelsWidth = new_width;
-            devmode.dmPelsHeight = new_height;
-            devmode.dmDisplayFrequency = target_refresh_rate;
+            // 处理分辨率
+            if width.is_some() && height.is_some() {
+                devmode.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
+                devmode.dmPelsWidth = width.unwrap();
+                devmode.dmPelsHeight = height.unwrap();
+                changed = true;
+            }
+
+            // 如果没有任何改动，则直接返回成功
+            if !changed {
+                return Ok(());
+            }
+
+            devmode.dmFields |= DM_BITSPERPEL;
             devmode.dmBitsPerPel = 32;
             unsafe { devmode.Anonymous1.Anonymous2.dmDisplayFixedOutput = DEVMODE_DISPLAY_FIXED_OUTPUT(0); }
-
-            unsafe {
-                devmode.Anonymous1.Anonymous2.dmDisplayOrientation = match orientation {
-                    0 => DMDO_DEFAULT,
-                    90 => DMDO_90,
-                    180 => DMDO_180,
-                    270 => DMDO_270,
-                    _ => return Err("没有支持的旋转角度".to_string()),
-                };
-            }
 
             // 测试模式
             let test_result = unsafe {
