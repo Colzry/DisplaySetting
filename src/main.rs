@@ -1,3 +1,4 @@
+use std::process::Command;
 use clap::Parser;
 use windows::Win32::Graphics::Gdi::*;
 use windows::core::PCWSTR;
@@ -7,15 +8,15 @@ use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_SETLOGI
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
-    /// 刷新率 (Hz)，不指定自动获取最高的刷新率设置
+    /// 刷新率 (Hz)，不传默认不修改
     #[arg(short = 'r', long)]
     refresh_rate: Option<u32>,
 
-    /// 显示方向 (0-横向/90-纵向/180-横向翻转/270-纵向翻转)，默认 0-横向
+    /// 显示方向 (0-横向/90-纵向/180-横向翻转/270-纵向翻转)，默认 0
     #[arg(short = 'o', long)]
     orientation: Option<u32>,
 
-    /// 目标显示器 (1-显示器1/2-显示器2)，默认 1-显示器1
+    /// 目标显示器 (1-显示器1/2-显示器2)，默认 1
     #[arg(short = 'd', long, default_value_t = 1)]
     display: u32,
 
@@ -23,11 +24,11 @@ struct Args {
     #[arg(short = 's', long)]
     scaling: Option<u32>,
 
-    /// 目标分辨率宽度，不传默认不修改
+    /// 目标分辨率宽度，需和高度一起设置，不传默认不修改
     #[arg(short = 'w', long)]
     width: Option<u32>,
 
-    /// 目标分辨率高度，不传默认不修改
+    /// 目标分辨率高度，需和宽度一起设置，不传默认不修改
     #[arg(short = 'h', long)]
     height: Option<u32>,
 }
@@ -62,6 +63,7 @@ fn main() {
 }
 
 /// 自动获取最高刷新率
+#[allow(dead_code)]
 fn get_max_refresh_rate(device_name: PCWSTR) -> Option<u32> {
     let mut devmode = DEVMODEW {
         dmSize: std::mem::size_of::<DEVMODEW>() as u16,
@@ -84,6 +86,15 @@ fn get_max_refresh_rate(device_name: PCWSTR) -> Option<u32> {
     } else {
         None
     }
+}
+
+/// 重启资源管理器
+#[allow(dead_code)]
+fn restart_explorer_com() {
+    Command::new("powershell")
+        .args(&["-Command", "(New-Object -ComObject Shell.Application).ToggleDesktop()"])
+        .spawn()
+        .expect("无法重启 Explorer");
 }
 
 /// 修改显示器的刷新率、方向、缩放比例和分辨率
@@ -149,6 +160,7 @@ fn change_display_settings(
             // 处理方向
             if let Some(rotate) = orientation {
                 devmode.dmFields |= DM_DISPLAYORIENTATION;
+                #[allow(unused_unsafe)]
                 unsafe {
                     devmode.Anonymous1.Anonymous2.dmDisplayOrientation = match rotate {
                         0 => DMDO_DEFAULT,
@@ -186,6 +198,7 @@ fn change_display_settings(
 
             devmode.dmFields |= DM_BITSPERPEL;
             devmode.dmBitsPerPel = 32;
+            #[allow(unused_unsafe)]
             unsafe { devmode.Anonymous1.Anonymous2.dmDisplayFixedOutput = DEVMODE_DISPLAY_FIXED_OUTPUT(0); }
 
             // 测试模式
