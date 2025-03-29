@@ -1,6 +1,6 @@
 [package]
 name = "DisplaySetting"
-version = "1.0.0"
+version = "1.1.0"
 description = "显示器刷新率和显示方向设置工具"
 authors = ["Colzry <colzry@outlook.com>"]
 edition = "2021"
