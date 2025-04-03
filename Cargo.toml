@@ -1,10 +1,10 @@
 [package]
 name = "DisplaySetting"
-version = "1.1.0"
-description = "显示器刷新率和显示方向设置工具"
+version = "1.2.0"
+description = "显示器设置工具"
 authors = ["Colzry <colzry@outlook.com>"]
 edition = "2021"
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
-windows = { version = "0.56.0", features = ["Win32_Graphics_Gdi", "Win32_Foundation", "Win32_UI", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.56.0", features = ["Win32_Graphics_Gdi", "Win32_Foundation", "Win32_UI", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemServices"] }
