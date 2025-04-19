@@ -2,8 +2,6 @@ use std::process::Command;
 use clap::Parser;
 use windows::Win32::Graphics::Gdi::*;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_SETLOGICALDPIOVERRIDE, SPIF_UPDATEINIFILE, SPIF_SENDCHANGE, SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -19,10 +17,6 @@ struct Args {
     /// 目标显示器 (1-显示器1/2-显示器2)，默认 1
     #[arg(short = 'd', long, default_value_t = 1)]
     display: u32,
-
-    /// 缩放比例 (100/125/150/175/200/225/250)，不传默认不修改
-    #[arg(short = 's', long)]
-    scaling: Option<u32>,
 
     /// 目标分辨率宽度，需和高度一起设置，不传默认不修改
     #[arg(short = 'w', long)]
@@ -47,13 +41,6 @@ fn main() {
         }
     }
 
-    if let Some(scaling) = args.scaling {
-        if ![100, 125, 150, 175, 200, 225, 250].contains(&scaling) {
-            eprintln!("无效缩放. 允许的值: 100, 125, 150, 175, 200, 225, 250.");
-            return;
-        }
-    }
-
     if let Some(mode) = args.mode {
         if ![1, 2, 3, 4].contains(&mode) {
             eprintln!("无效显示模式. 允许的值: 1(仅主屏), 2(仅副屏), 3(复制), 4(扩展).");
@@ -65,7 +52,6 @@ fn main() {
         args.display,
         args.refresh_rate,
         args.orientation,
-        args.scaling,
         args.width,
         args.height,
         args.mode,
@@ -132,7 +118,6 @@ fn change_display_settings(
     display_index: u32,
     refresh_rate: Option<u32>,
     orientation: Option<u32>,
-    scaling: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
     mode: Option<u32>,
@@ -162,40 +147,12 @@ fn change_display_settings(
     if unsafe { EnumDisplaySettingsW(device_name, ENUM_CURRENT_SETTINGS, &mut devmode) }.as_bool() {
         let mut changed = false;
 
-        // 处理缩放比例
-        if let Some(scale) = scaling {
-            let dpi = match scale {
-                100 => 0, 125 => 1, 150 => 2,
-                175 => 3, 200 => 4, 225 => 5, 250 => 6,
-                _ => return Err("没有支持的缩放值".to_string()),
-            };
-
-            unsafe {
-                SystemParametersInfoW(
-                    SPI_SETLOGICALDPIOVERRIDE,
-                    dpi,
-                    None,
-                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
-                ).expect("无法应用缩放");
-            }
-
-            let log_pixels = match scale {
-                100 => 96, 125 => 120, 150 => 144,
-                175 => 168, 200 => 192, 225 => 216, 250 => 240,
-                _ => return Err("没有支持的缩放值".to_string()),
-            };
-            devmode.dmFields |= DM_LOGPIXELS;
-            devmode.dmLogPixels = log_pixels as u16;
-            changed = true;
-        }
-
         // 处理刷新率
         if let Some(target_refresh_rate) = refresh_rate {
             devmode.dmFields |= DM_DISPLAYFREQUENCY;
             devmode.dmDisplayFrequency = target_refresh_rate;
             changed = true;
         }
-
 
         // 处理方向
         if let Some(rotate) = orientation {
@@ -214,7 +171,6 @@ fn change_display_settings(
                     _ => return Err("没有支持的旋转角度".to_string()),
                 };
             };
-
 
             // 确定是否需要交换分辨率
             let need_swap = match (current_orientation, rotate) {
@@ -284,53 +240,4 @@ fn change_display_settings(
     } else {
         Err("无法获取显示设置，请检查输入的参数".to_string())
     }
-}
-
-
-use winreg::enums::*;
-use winreg::RegKey;
-fn set_display_scaling(dpi: u32) -> Result<(), String> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let desktop = hkcu.open_subkey_with_flags("Control Panel\\Desktop", KEY_SET_VALUE)
-        .map_err(|e| format!("无法打开注册表: {}", e))?;
-
-    // 设置 LogPixels（例如 125% = 120）
-    desktop.set_value("LogPixels", &dpi)
-        .map_err(|e| format!("无法写入注册表: {}", e))?;
-
-    Ok(())
-}
-
-use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
-fn notify_dpi_change() {
-    unsafe {
-        SendMessageTimeoutW(
-            HWND_BROADCAST,
-            WM_SETTINGCHANGE,
-            WPARAM(0),
-            LPARAM("WindowsMetrics\0".encode_utf16().collect::<Vec<u16>>().as_ptr() as isize),
-            SMTO_ABORTIFHUNG,
-            5000,
-            *std::ptr::null_mut(),
-        );
-
-        // 通知资源管理器设置改变（例如 DPI、文件关联等）
-        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
-    }
-}
-
-fn apply_scaling(scale_percent: u32) -> Result<(), String> {
-    let dpi = match scale_percent {
-        100 => 96,
-        125 => 120,
-        150 => 144,
-        175 => 168,
-        200 => 192,
-        _ => return Err("不支持的缩放比例".to_string()),
-    };
-
-    set_display_scaling(dpi)?;
-    notify_dpi_change();
-    println!("缩放已设置为 {}%，请注销后生效", scale_percent);
-    Ok(())
 }
