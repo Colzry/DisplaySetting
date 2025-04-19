@@ -2,7 +2,8 @@ use std::process::Command;
 use clap::Parser;
 use windows::Win32::Graphics::Gdi::*;
 use windows::core::PCWSTR;
-use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_SETLOGICALDPIOVERRIDE, SPIF_UPDATEINIFILE, SPIF_SENDCHANGE};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_SETLOGICALDPIOVERRIDE, SPIF_UPDATEINIFILE, SPIF_SENDCHANGE, SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -73,8 +74,8 @@ fn main() {
     }
 }
 
-/// 获取所有显示器的信息
-fn get_display_devices() -> Vec<DISPLAY_DEVICEW> {
+/// 获取所有显示器的信息（包括非活动显示器）
+fn get_all_display_devices() -> Vec<DISPLAY_DEVICEW> {
     let mut devices = Vec::new();
     let mut i = 0;
 
@@ -85,9 +86,7 @@ fn get_display_devices() -> Vec<DISPLAY_DEVICEW> {
         };
 
         if unsafe { EnumDisplayDevicesW(None, i, &mut device, 0) }.as_bool() {
-            if (device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0 {
-                devices.push(device);
-            }
+            devices.push(device);
             i += 1;
         } else {
             break;
@@ -97,124 +96,35 @@ fn get_display_devices() -> Vec<DISPLAY_DEVICEW> {
     devices
 }
 
+#[allow(dead_code)]
+/// 获取活动显示器的信息
+fn get_active_display_devices() -> Vec<DISPLAY_DEVICEW> {
+    get_all_display_devices()
+        .into_iter()
+        .filter(|d| (d.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0)
+        .collect()
+}
+
 /// 设置显示模式 (仅主屏/仅副屏/复制/扩展)
 fn set_display_mode(mode: u32) -> Result<(), String> {
-    let devices = get_display_devices();
-    if devices.len() < 2{
-        return Err("需要至少两个显示器才能设置显示模式".to_string());
-    }
-
-    let mut primary_devmode = DEVMODEW {
-        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-        ..Default::default()
-    };
-
-    let mut secondary_devmode = DEVMODEW {
-        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-        ..Default::default()
-    };
-
-    let primary_device = PCWSTR(devices[0].DeviceName.as_ptr());
-    let secondary_device = PCWSTR(devices[1].DeviceName.as_ptr());
-
-    // 获取当前设置
-    if !unsafe { EnumDisplaySettingsW(primary_device, ENUM_CURRENT_SETTINGS, &mut primary_devmode) }.as_bool() {
-        return Err("无法获取主显示器设置".to_string());
-    }
-
-    if !unsafe { EnumDisplaySettingsW(secondary_device, ENUM_CURRENT_SETTINGS, &mut secondary_devmode) }.as_bool() {
-        return Err("无法获取副显示器设置".to_string());
-    }
-
-    match mode {
-        1 => { // 仅主屏
-            unsafe {
-                ChangeDisplaySettingsExW(
-                    secondary_device,
-                    None,
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_NORESET,
-                    None,
-                );
-                ChangeDisplaySettingsExW(
-                    None,
-                    None,
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_RESET,
-                    None,
-                );
-            }
-        },
-        2 => { // 仅副屏
-            unsafe {
-                ChangeDisplaySettingsExW(
-                    primary_device,
-                    None,
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_NORESET,
-                    None,
-                );
-                ChangeDisplaySettingsExW(
-                    None,
-                    None,
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_RESET,
-                    None,
-                );
-            }
-        },
-        3 => { // 复制模式
-            // 使副显示器使用主显示器的设置
-            secondary_devmode = primary_devmode.clone();
-            secondary_devmode.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_DISPLAYFLAGS;
-
-            unsafe {
-                ChangeDisplaySettingsExW(
-                    secondary_device,
-                    Some(&secondary_devmode as *const _),
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_NORESET,
-                    None,
-                );
-                ChangeDisplaySettingsExW(
-                    None,
-                    None,
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_RESET,
-                    None,
-                );
-            }
-        },
-        4 => { // 扩展模式
-            // 设置副显示器在主显示器右侧
-            #[allow(unused_unsafe)]
-            unsafe {
-                secondary_devmode.Anonymous1.Anonymous2.dmPosition.x = primary_devmode.dmPelsWidth as i32;
-                secondary_devmode.Anonymous1.Anonymous2.dmPosition.y = 0;
-            }
-            secondary_devmode.dmFields = DM_POSITION;
-
-            unsafe {
-                ChangeDisplaySettingsExW(
-                    secondary_device,
-                    Some(&secondary_devmode as *const _),
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_NORESET,
-                    None,
-                );
-                ChangeDisplaySettingsExW(
-                    None,
-                    None,
-                    None,
-                    CDS_UPDATEREGISTRY | CDS_RESET,
-                    None,
-                );
-            }
-        },
+    let arg = match mode {
+        1 => "/internal",
+        2 => "/external",
+        3 => "/clone",
+        4 => "/extend",
         _ => return Err("无效显示模式".to_string()),
-    }
+    };
 
-    Ok(())
+    let status = Command::new("C:\\Windows\\System32\\DisplaySwitch.exe")
+        .arg(arg)
+        .status()
+        .map_err(|e| format!("执行失败: {}", e))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("显示模式切换失败".to_string())
+    }
 }
 
 /// 修改显示器的刷新率、方向、缩放比例和分辨率
@@ -232,7 +142,7 @@ fn change_display_settings(
         set_display_mode(mode)?;
     }
 
-    let devices = get_display_devices();
+    let devices = get_all_display_devices();
     if devices.is_empty() {
         return Err("没有检测到任何显示器".to_string());
     }
@@ -334,7 +244,7 @@ fn change_display_settings(
             changed = true;
         }
 
-        if !changed && mode.is_none() {
+        if !changed {
             return Ok(());
         }
 
@@ -377,11 +287,50 @@ fn change_display_settings(
 }
 
 
-/// 重启资源管理器
-#[allow(dead_code)]
-fn restart_explorer_com() {
-    Command::new("powershell")
-        .args(&["-Command", "(New-Object -ComObject Shell.Application).ToggleDesktop()"])
-        .spawn()
-        .expect("无法重启 Explorer");
+use winreg::enums::*;
+use winreg::RegKey;
+fn set_display_scaling(dpi: u32) -> Result<(), String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let desktop = hkcu.open_subkey_with_flags("Control Panel\\Desktop", KEY_SET_VALUE)
+        .map_err(|e| format!("无法打开注册表: {}", e))?;
+
+    // 设置 LogPixels（例如 125% = 120）
+    desktop.set_value("LogPixels", &dpi)
+        .map_err(|e| format!("无法写入注册表: {}", e))?;
+
+    Ok(())
+}
+
+use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+fn notify_dpi_change() {
+    unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            WPARAM(0),
+            LPARAM("WindowsMetrics\0".encode_utf16().collect::<Vec<u16>>().as_ptr() as isize),
+            SMTO_ABORTIFHUNG,
+            5000,
+            *std::ptr::null_mut(),
+        );
+
+        // 通知资源管理器设置改变（例如 DPI、文件关联等）
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
+}
+
+fn apply_scaling(scale_percent: u32) -> Result<(), String> {
+    let dpi = match scale_percent {
+        100 => 96,
+        125 => 120,
+        150 => 144,
+        175 => 168,
+        200 => 192,
+        _ => return Err("不支持的缩放比例".to_string()),
+    };
+
+    set_display_scaling(dpi)?;
+    notify_dpi_change();
+    println!("缩放已设置为 {}%，请注销后生效", scale_percent);
+    Ok(())
 }
