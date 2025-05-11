@@ -2,7 +2,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 pub struct Args {
-    /// 刷新率 (Hz)，0 表示自动选择最大刷新率
+    /// 刷新率 (Hz)，0 表示自动选择最大刷新率，0自动适应最高刷新率
     #[arg(short = 'r', long = "refresh-rate", value_name = "HZ")]
     pub refresh_rate: Option<u32>,
 
